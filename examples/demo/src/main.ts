@@ -27,7 +27,7 @@ const worker = new DecoderWorker();
 renderer.init(worker).then(() => {
   console.log("Renderer initialized");
   renderer.enableInteractions();
-}).catch(err => {
+}).catch((err: Error) => {
   console.error("Failed to init renderer:", err);
   alert("WebGPU not supported or failed to initialize: " + err.message);
 });

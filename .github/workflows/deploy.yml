@@ -41,7 +41,7 @@ jobs:
       - name: Build demo
         working-directory: examples/demo
         env:
-          VITE_BASE_PATH: /cog-rendered/
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
         run: pnpm run build
 
       - name: Setup Pages

@@ -27,9 +27,10 @@ const worker = new DecoderWorker();
 renderer.init(worker).then(() => {
   console.log("Renderer initialized");
   renderer.enableInteractions();
-}).catch(err => {
+}).catch((err: unknown) => {
+  const message = err instanceof Error ? err.message : String(err);
   console.error("Failed to init renderer:", err);
-  alert("WebGPU not supported or failed to initialize: " + err.message);
+  alert("WebGPU not supported or failed to initialize: " + message);
 });
 
 fileInput.addEventListener('change', (e) => {

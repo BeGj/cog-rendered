@@ -2,7 +2,9 @@
 
 WebGPU based COG renderer with support for Web Workers.
 
+## Demo
 
+The live demo is available at: https://begj.github.io/cog-rendered/
 
 ## Example Cogs:
 

@@ -1,5 +1,6 @@
 import './style.css' // Optional if using basic CSS
 import { WebGPURenderer } from '@cog-renderer/core';
+import type { BandMetadata } from '@cog-renderer/core';
 // Import worker using relative path for dev
 import DecoderWorker from '../../../packages/core/src/worker/decoder.worker.ts?worker';
 
@@ -50,10 +51,146 @@ loadUrlBtn.addEventListener('click', () => {
 
 const controls = document.getElementById('controls');
 if (controls) {
+  // Band selector container
+  const bandContainer = document.createElement('div');
+  bandContainer.id = 'bandSelector';
+  bandContainer.style.marginTop = '15px';
+  bandContainer.style.display = 'none';
+  bandContainer.style.fontSize = '12px';
+  bandContainer.style.borderTop = '1px solid #444';
+  bandContainer.style.paddingTop = '10px';
+
+  const bandTitle = document.createElement('h4');
+  bandTitle.textContent = 'Band Selection';
+  bandTitle.style.margin = '0 0 10px 0';
+  bandTitle.style.fontSize = '14px';
+  bandContainer.appendChild(bandTitle);
+
+  const bandInfo = document.createElement('div');
+  bandInfo.id = 'bandInfo';
+  bandInfo.style.marginBottom = '10px';
+  bandInfo.style.fontSize = '11px';
+  bandInfo.style.color = '#aaa';
+  bandContainer.appendChild(bandInfo);
+
+  // RGB band selectors
+  const createBandSelector = (label: string, color: string) => {
+    const div = document.createElement('div');
+    div.style.marginBottom = '8px';
+    div.innerHTML = `
+      <label style="display: block; margin-bottom: 3px; color: ${color};">${label}:</label>
+      <select style="width: 100%; padding: 4px; background: #222; color: white; border: 1px solid #444; border-radius: 3px;">
+      </select>
+    `;
+    return div;
+  };
+
+  const redSelector = createBandSelector('Red', '#ff6b6b');
+  const greenSelector = createBandSelector('Green', '#51cf66');
+  const blueSelector = createBandSelector('Blue', '#339af0');
+
+  bandContainer.appendChild(redSelector);
+  bandContainer.appendChild(greenSelector);
+  bandContainer.appendChild(blueSelector);
+
+  const applyBtn = document.createElement('button');
+  applyBtn.textContent = 'Apply Band Selection';
+  applyBtn.style.width = '100%';
+  applyBtn.style.marginTop = '10px';
+  bandContainer.appendChild(applyBtn);
+
+  controls.appendChild(bandContainer);
+
+  // Handle band initialization
+  renderer.onBandsInitialized((bands: BandMetadata[], suggestedBands: number[]) => {
+    console.log('Bands initialized:', bands, 'Suggested:', suggestedBands);
+
+    if (bands.length === 0) {
+      bandContainer.style.display = 'none';
+      return;
+    }
+
+    bandContainer.style.display = 'block';
+
+    // Update band info
+    if (bands.length === 1) {
+      bandInfo.textContent = `Panchromatic image (1 band)`;
+    } else {
+      bandInfo.textContent = `Multi-band image (${bands.length} bands detected)`;
+    }
+
+    // Populate selectors
+    const redSelect = redSelector.querySelector('select') as HTMLSelectElement;
+    const greenSelect = greenSelector.querySelector('select') as HTMLSelectElement;
+    const blueSelect = blueSelector.querySelector('select') as HTMLSelectElement;
+
+    redSelect.innerHTML = '';
+    greenSelect.innerHTML = '';
+    blueSelect.innerHTML = '';
+
+    bands.forEach((band) => {
+      const optionR = document.createElement('option');
+      optionR.value = band.index.toString();
+      optionR.textContent = `${band.name}${band.description ? ' - ' + band.description : ''}`;
+      redSelect.appendChild(optionR);
+
+      const optionG = optionR.cloneNode(true) as HTMLOptionElement;
+      greenSelect.appendChild(optionG);
+
+      const optionB = optionR.cloneNode(true) as HTMLOptionElement;
+      blueSelect.appendChild(optionB);
+    });
+
+    // Set suggested bands
+    if (suggestedBands.length >= 3) {
+      // Ensure selectors are visible and reset labels
+      greenSelector.style.display = 'block';
+      blueSelector.style.display = 'block';
+
+      redSelector.querySelector('label')!.textContent = 'Red:';
+      (redSelector.querySelector('label') as HTMLElement).style.color = '#ff6b6b';
+
+      redSelect.value = suggestedBands[0].toString();
+      greenSelect.value = suggestedBands[1].toString();
+      blueSelect.value = suggestedBands[2].toString();
+    } else if (suggestedBands.length === 1) {
+      // For panchromatic, hide green/blue selectors
+      greenSelector.style.display = 'none';
+      blueSelector.style.display = 'none';
+      redSelector.querySelector('label')!.textContent = 'Band:';
+      (redSelector.querySelector('label') as HTMLElement).style.color = '#fff';
+      redSelect.value = suggestedBands[0].toString();
+    }
+  });
+
+  // Apply band selection
+  applyBtn.addEventListener('click', () => {
+    const redSelect = redSelector.querySelector('select') as HTMLSelectElement;
+    const greenSelect = greenSelector.querySelector('select') as HTMLSelectElement;
+    const blueSelect = blueSelector.querySelector('select') as HTMLSelectElement;
+
+    const bands = renderer.getBandMetadata();
+
+    if (bands.length === 1) {
+      // Panchromatic
+      renderer.setBands([parseInt(redSelect.value)]);
+    } else {
+      // RGB
+      renderer.setBands([
+        parseInt(redSelect.value),
+        parseInt(greenSelect.value),
+        parseInt(blueSelect.value)
+      ]);
+    }
+  });
+
+  // ADRA controls
   const adraContainer = document.createElement('div');
-  adraContainer.style.marginTop = '10px';
-  adraContainer.style.display = 'none'; // Hidden by default
+  adraContainer.style.marginTop = '15px';
+  adraContainer.style.display = 'none';
   adraContainer.style.fontSize = '12px';
+  adraContainer.style.borderTop = '1px solid #444';
+  adraContainer.style.paddingTop = '10px';
 
   const defaultSettings = { clipLow: 1, clipHigh: 99, padLow: 50, padHigh: 20 };
 

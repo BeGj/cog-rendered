@@ -46,6 +46,8 @@ jobs:
 
       - name: Build demo
         working-directory: examples/demo
+        env:
+          VITE_BASE_PATH: /cog-rendered/
         run: pnpm run build
 
       - name: Setup Pages

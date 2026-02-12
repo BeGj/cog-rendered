@@ -41,8 +41,60 @@ fileInput.addEventListener('change', (e) => {
 });
 
 loadUrlBtn.addEventListener('click', () => {
-  const url = urlInput.value;
+  const url = urlInput.value || "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/21/H/UB/2021/9/S2B_21HUB_20210915_0_L2A/TCI.tif";
+  urlInput.value = url; // Show it
   if (url) {
     renderer.load(url);
   }
 });
+
+const controls = document.getElementById('controls');
+if (controls) {
+  const adraContainer = document.createElement('div');
+  adraContainer.style.marginTop = '10px';
+  adraContainer.style.display = 'none'; // Hidden by default
+  adraContainer.style.fontSize = '12px';
+
+  const defaultSettings = { clipLow: 1, clipHigh: 99, padLow: 50, padHigh: 20 };
+
+  const createSlider = (label: string, min: number, max: number, value: number, onChange: (val: number) => void) => {
+    const div = document.createElement('div');
+    div.style.marginBottom = '5px';
+    div.innerHTML = `
+      <div style="display: flex; justify-content: space-between;">
+        <span>${label}</span>
+        <span id="val-${label.replace(/\s/g, '')}">${value}%</span>
+      </div>
+      <input type="range" min="${min}" max="${max}" value="${value}" style="width: 100%">
+    `;
+    const input = div.querySelector('input') as HTMLInputElement;
+    const valSpan = div.querySelector('span:last-child') as HTMLSpanElement;
+    input.addEventListener('input', (e) => {
+      const v = Number((e.target as HTMLInputElement).value);
+      valSpan.textContent = `${v}%`;
+      onChange(v);
+    });
+    return div;
+  };
+
+  adraContainer.appendChild(createSlider("Clip Low", 0, 10, defaultSettings.clipLow, (v) => renderer.setADRAOptions({ clipLow: v })));
+  adraContainer.appendChild(createSlider("Clip High", 90, 100, defaultSettings.clipHigh, (v) => renderer.setADRAOptions({ clipHigh: v })));
+  adraContainer.appendChild(createSlider("Pad Low", 0, 100, defaultSettings.padLow, (v) => renderer.setADRAOptions({ padLow: v })));
+  adraContainer.appendChild(createSlider("Pad High", 0, 100, defaultSettings.padHigh, (v) => renderer.setADRAOptions({ padHigh: v })));
+  controls.appendChild(adraContainer);
+
+  const label = document.createElement('label');
+  label.innerHTML = `
+    <input type="checkbox" id="autoRangeCheckbox"> Auto Range
+  `;
+  label.style.marginLeft = '10px';
+  label.style.color = 'white';
+  controls.appendChild(label);
+
+  const checkbox = document.getElementById('autoRangeCheckbox') as HTMLInputElement;
+  checkbox.addEventListener('change', (e) => {
+    const checked = (e.target as HTMLInputElement).checked;
+    renderer.setAutoRange(checked);
+    adraContainer.style.display = checked ? 'block' : 'none';
+  });
+}

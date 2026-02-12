@@ -22,6 +22,11 @@ export class TileManager {
     imageWidth: number = 0;
     imageHeight: number = 0;
 
+    // Global Stats (for when ADRA is off)
+    globalMin: number = 0;
+    globalMax: number = 1; // Default
+    hasGlobalStats: boolean = false;
+
     grayBindGroup: GPUBindGroup | undefined;
     grayUniformBuffer: GPUBuffer | undefined;
 
@@ -75,6 +80,8 @@ export class TileManager {
 
     onInitComplete: ((width: number, height: number, tileSize: number, levels: any[]) => void) | null = null;
 
+    version: number = 0;
+
     handleWorkerMessage(e: MessageEvent) {
         const { type, id, bitmap, levels } = e.data;
         if (type === 'init-complete') {
@@ -93,26 +100,35 @@ export class TileManager {
                 this.device.queue.writeBuffer(this.grayUniformBuffer, 0, data);
             }
 
-            console.log("COG Initialized", { levels });
-
             if (this.onInitComplete) {
                 this.onInitComplete(this.imageWidth, this.imageHeight, this.tileSize, this.levels);
             }
         } else if (type === 'tile-decoded') {
             const tile = this.tiles.get(id);
             if (tile) {
-                if (bitmap) {
+                const { data, min, max } = e.data;
+                if (data) {
+                    // Update Global Stats
+                    if (!this.hasGlobalStats) {
+                        this.globalMin = min;
+                        this.globalMax = max;
+                        this.hasGlobalStats = true;
+                    } else {
+                        // Expand global range
+                        if (min < this.globalMin) this.globalMin = min;
+                        if (max > this.globalMax) this.globalMax = max;
+                    }
+
                     // Upload to GPU
-                    this.uploadTile(tile, bitmap);
+                    this.uploadTile(tile, data);
                     tile.loaded = true;
+                    tile.min = min;
+                    tile.max = max;
+
+                    // Increment version to signal data change
+                    this.version++;
                 } else {
                     // Failed to decode (likely out of bounds or error). 
-                    // Should we mark it as loaded so we don't retry immediately?
-                    // Or keep it unloaded?
-                    // If we keep it unloaded, it might retry if visible. 
-                    // If we mark as loaded without texture, we need to handle rendering.
-
-                    // For now, let's mark it as loaded but without texture, so it stops requesting.
                     tile.loaded = true;
                 }
             }
@@ -128,6 +144,14 @@ export class TileManager {
         this.levels = [];
         this.imageWidth = 0;
         this.imageHeight = 0;
+
+        // Reset global stats to prevent stale data from previous file
+        this.globalMin = 0;
+        this.globalMax = 1;
+        this.hasGlobalStats = false;
+
+        // Reset version for change detection
+        this.version = 0;
 
         this.worker.postMessage({
             type: 'init',
@@ -313,45 +337,66 @@ export class TileManager {
         });
     }
 
-    uploadTile(tile: Tile, bitmap: ImageBitmap) {
+    uploadTile(tile: Tile, data: Float32Array) {
+        // Data is Float32Array (RGBA)
+        const dim = Math.sqrt(data.length / 4);
+
+        if (dim % 1 !== 0) {
+            console.error("Invalid tile dimensions derived from data length:", data.length, dim);
+        }
+
+        const bytesPerRow = dim * 16;
+        // WebGPU requires bytesPerRow to be 256-byte aligned
+        const alignedBytesPerRow = Math.ceil(bytesPerRow / 256) * 256;
+        const needsPadding = bytesPerRow !== alignedBytesPerRow;
+
+        let uploadData = data;
+        if (needsPadding) {
+            // Create padded buffer
+            const paddedSize = (alignedBytesPerRow / 16) * dim * 4; // total floats needed
+            const paddedData = new Float32Array(paddedSize);
+
+            // Copy row by row with padding
+            for (let row = 0; row < dim; row++) {
+                const srcOffset = row * dim * 4;
+                const dstOffset = row * (alignedBytesPerRow / 4);
+                paddedData.set(data.subarray(srcOffset, srcOffset + dim * 4), dstOffset);
+            }
+            uploadData = paddedData;
+        }
+
         const texture = this.device.createTexture({
-            size: [bitmap.width, bitmap.height, 1],
-            format: 'rgba8unorm',
+            size: [dim, dim, 1],
+            format: 'rgba32float',
             usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
         });
 
-        this.device.queue.copyExternalImageToTexture(
-            { source: bitmap },
+        this.device.queue.writeTexture(
             { texture: texture },
-            [bitmap.width, bitmap.height]
+            uploadData as any,
+            { bytesPerRow: alignedBytesPerRow, rowsPerImage: dim },
+            [dim, dim]
         );
 
         tile.texture = texture;
 
         // Create Uniform Buffer for Tile Transform
-        // We pass {position, size} to shader.
         const uniformBuffer = this.device.createBuffer({
-            size: 32, // vec2 + vec2 = 16 bytes. But alignment? 
-            // Uniform buffer min size is usually small, but let's align. 
-            // Struct { pos: vec2, size: vec2 } -> 16 bytes.
-            // 4 floats * 4 bytes = 16 bytes.
-            // Let's alloc 32 just in case.
+            size: 32,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
 
-        const data = new Float32Array([
+        const uniformData = new Float32Array([
             tile.worldX, tile.worldY,
             tile.width, tile.height
         ]);
-        this.device.queue.writeBuffer(uniformBuffer, 0, data);
+        this.device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 
         // Create Bind Group
-        // Layout must match pipeline source
-        // Group 1: Texture (0), Sampler (1), TileUniforms (2)
-
+        // Use non-filtering sampler by default to match rgba32float support
         const sampler = this.device.createSampler({
-            magFilter: 'linear',
-            minFilter: 'linear',
+            magFilter: 'nearest',
+            minFilter: 'nearest',
         });
 
         tile.bindGroup = this.device.createBindGroup({
@@ -378,4 +423,13 @@ export interface Tile {
     texture?: GPUTexture;
     bindGroup?: GPUBindGroup;
     lastUsed: number;
+    min?: number;
+    max?: number;
+}
+
+export interface ADRAOptions {
+    clipLow: number;  // 0-100
+    clipHigh: number; // 0-100
+    padLow: number;   // 0-100 (percent of range)
+    padHigh: number;  // 0-100 (percent of range)
 }

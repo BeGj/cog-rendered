@@ -1,61 +1,18 @@
 import { Viewport } from './Viewport';
-import { TileManager } from './TileManager';
+import { TileManager, ADRAOptions } from './TileManager';
 import { InteractionHandler } from './InteractionHandler';
+import { ADRAAnalyzer } from './ADRAAnalyzer';
+import tileShaderSource from './shaders/tile.wgsl?raw';
 
-const shaderSource = `
-struct Viewport {
-    center: vec2<f32>,
-    scale: vec2<f32>,
-};
-
-struct TileUniforms {
-    position: vec2<f32>, // World position
-    size: vec2<f32>,     // World size
-};
-
-@group(0) @binding(0) var<uniform> viewport: Viewport;
-
-@group(1) @binding(0) var myTexture: texture_2d<f32>;
-@group(1) @binding(1) var mySampler: sampler;
-@group(1) @binding(2) var<uniform> tile: TileUniforms;
-
-struct VertexOutput {
-    @builtin(position) Position : vec4<f32>,
-    @location(0) uv : vec2<f32>,
-};
-
-@vertex
-fn vert_main(@builtin(vertex_index) VertexIndex : u32) -> VertexOutput {
-    var pos = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(1.0, 0.0),
-        vec2<f32>(1.0, 1.0)
-    );
-    
-    var xy = pos[VertexIndex];
-    
-    // World Position of vertex
-    var worldPos = tile.position + xy * tile.size;
-    
-    // Viewport Transform
-    // NDC = (World - Center) * Scale
-    var ndc = (worldPos - viewport.center) * viewport.scale;
-    
-    var output : VertexOutput;
-    output.Position = vec4<f32>(ndc, 0.0, 1.0);
-    output.uv = xy;
-    return output;
-}
-
-@fragment
-fn frag_main(@location(0) uv : vec2<f32>) -> @location(0) vec4<f32> {
-    return textureSample(myTexture, mySampler, uv);
-}
-`;
-
+/**
+ * WebGPURenderer handles rendering of Cloud Optimized GeoTIFF (COG) imagery using WebGPU.
+ * 
+ * Features:
+ * - Tiled rendering with automatic LOD selection
+ * - Interactive pan/zoom
+ * - Optional ADRA (Automatic Dynamic Range Adjustment) for enhanced visualization
+ * - Float32 texture support for high dynamic range imagery
+ */
 export class WebGPURenderer {
     canvas: HTMLCanvasElement;
     device: GPUDevice | null = null;
@@ -65,17 +22,51 @@ export class WebGPURenderer {
     tileManager: TileManager | null = null;
     interactionHandler: InteractionHandler | null = null;
 
+    settingsBuffer: GPUBuffer | null = null;
+    autoRangeEnabled: boolean = false;
+    adraAnalyzer: ADRAAnalyzer | null = null;
+
+    // Cached bind groups for performance
+    private cachedViewportBindGroup: GPUBindGroup | null = null;
+    private lastSettingsSignature: string = '';
+
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
         this.viewport = null as any;
     }
 
+    /**
+     * Enables mouse/touch interactions for pan and zoom.
+     */
     enableInteractions() {
         if (!this.viewport) return;
         this.interactionHandler = new InteractionHandler(this.canvas, this.viewport);
     }
 
+    /**
+     * Enables or disables ADRA (Automatic Dynamic Range Adjustment).
+     * @param enabled - Whether to enable ADRA
+     */
+    setAutoRange(enabled: boolean) {
+        this.autoRangeEnabled = enabled;
+    }
+
+    /**
+     * Updates ADRA configuration options.
+     * @param options - Partial ADRA options to update
+     */
+    setADRAOptions(options: Partial<ADRAOptions>) {
+        if (this.adraAnalyzer) {
+            this.adraAnalyzer.setOptions(options);
+        }
+    }
+
+    /**
+     * Initializes the WebGPU renderer.
+     * @param worker - Web Worker for COG decoding
+     */
     async init(worker: Worker) {
+
         if (!navigator.gpu) {
             throw new Error("WebGPU not supported on this browser.");
         }
@@ -85,7 +76,12 @@ export class WebGPURenderer {
             throw new Error("No appropriate GPUAdapter found.");
         }
 
-        this.device = await adapter.requestDevice();
+        const requiredFeatures: GPUFeatureName[] = [];
+        if (adapter.features.has('float32-filterable')) {
+            requiredFeatures.push('float32-filterable');
+        }
+
+        this.device = await adapter.requestDevice({ requiredFeatures });
         this.context = this.canvas.getContext("webgpu");
 
         if (!this.context) {
@@ -101,12 +97,39 @@ export class WebGPURenderer {
 
         this.viewport = new Viewport(this.device, this.canvas.width, this.canvas.height);
 
-        const shaderModule = this.device.createShaderModule({
-            code: shaderSource,
+        // Settings Buffer
+        this.settingsBuffer = this.device.createBuffer({
+            size: 16,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
 
+        const shaderModule = this.device.createShaderModule({
+            code: tileShaderSource,
+        });
+
+        // Define Explicit Bind Group Layouts to ensure compatibility between pipelines
+        const group0Layout = this.device.createBindGroupLayout({
+            entries: [
+                { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }, // Viewport
+                { binding: 1, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } } // Settings
+            ]
+        });
+
+        const group1Layout = this.device.createBindGroupLayout({
+            entries: [
+                { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }, // Texture
+                { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } }, // Sampler
+                { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } } // Tile Uniform
+            ]
+        });
+
+        const pipelineLayout = this.device.createPipelineLayout({
+            bindGroupLayouts: [group0Layout, group1Layout]
+        });
+
+        // Main Pipeline
         this.pipeline = this.device.createRenderPipeline({
-            layout: 'auto',
+            layout: pipelineLayout,
             vertex: {
                 module: shaderModule,
                 entryPoint: 'vert_main',
@@ -137,22 +160,45 @@ export class WebGPURenderer {
             },
         });
 
+        // Initialize ADRA Analyzer
+        this.adraAnalyzer = new ADRAAnalyzer(
+            this.device,
+            shaderModule,
+            pipelineLayout,
+            {
+                clipLow: 1,
+                clipHigh: 99,
+                padLow: 50,
+                padHigh: 20
+            }
+        );
+
         this.tileManager = new TileManager(this.device, this.pipeline, worker);
+        // We might need to give tileManager access to analysisPipeline layout if it differs?
+        // Or just assume compatibility.
+
         this.tileManager.onInitComplete = this.onTileManagerInit.bind(this);
 
         // Start render loop
         requestAnimationFrame(this.render.bind(this));
     }
 
+    /**
+     * Loads a COG file from a File object or URL.
+     * @param source - File object or URL string
+     */
     load(source: File | string) {
         if (this.tileManager) {
             this.tileManager.init(source);
         }
     }
 
+    /**
+     * Callback when TileManager completes initialization.
+     * Automatically fits the image to the viewport.
+     */
     onTileManagerInit(width: number, height: number) {
         // Calculate fit
-        // Canvas aspect vs Image aspect
         const canvasAspect = this.canvas.width / this.canvas.height;
         const imageAspect = width / height;
 
@@ -165,14 +211,18 @@ export class WebGPURenderer {
             zoom = this.canvas.width / width;
         }
 
-        // Apply a small padding? 
+        // Apply a small padding
         zoom *= 0.95;
 
         this.viewport.setZoom(zoom);
         this.viewport.setCenter(width / 2, height / 2);
     }
 
-
+    /**
+     * Resizes the renderer canvas and viewport.
+     * @param width - New canvas width
+     * @param height - New canvas height
+     */
     resize(width: number, height: number) {
         if (!this.device || !this.context) return;
         this.canvas.width = width;
@@ -185,10 +235,13 @@ export class WebGPURenderer {
         this.viewport.resize(width, height);
     }
 
+    /**
+     * Main render loop. Renders visible tiles with optional ADRA.
+     */
     render() {
         requestAnimationFrame(this.render.bind(this));
 
-        if (!this.device || !this.context || !this.pipeline || !this.tileManager) return;
+        if (!this.device || !this.context || !this.pipeline || !this.tileManager || !this.settingsBuffer) return;
 
         const commandEncoder = this.device.createCommandEncoder();
         const textureView = this.context.getCurrentTexture().createView();
@@ -197,7 +250,7 @@ export class WebGPURenderer {
             colorAttachments: [
                 {
                     view: textureView,
-                    clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }, // Black background
+                    clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
                     loadOp: 'clear',
                     storeOp: 'store',
                 },
@@ -207,24 +260,68 @@ export class WebGPURenderer {
         const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
         passEncoder.setPipeline(this.pipeline);
 
-        // Update Viewport
-        // Only if changed? For now every frame is fine.
-        // Or check dirty flag.
-
-        const viewportBindGroup = this.device.createBindGroup({
-            layout: this.pipeline.getBindGroupLayout(0),
-            entries: [
-                {
-                    binding: 0,
-                    resource: {
-                        buffer: this.viewport.getBuffer(),
-                    },
-                },
-            ],
-        });
-        passEncoder.setBindGroup(0, viewportBindGroup);
-
         const visibleTiles = this.tileManager.getVisibleTiles(this.viewport);
+
+        let min = 0;
+        let max = 1;
+
+        if (this.autoRangeEnabled && this.adraAnalyzer) {
+            // Update ADRA statistics
+            const metrics = this.adraAnalyzer.update(
+                visibleTiles,
+                this.viewport,
+                this.settingsBuffer,
+                this.tileManager.version
+            );
+
+            // Log performance metrics (optional)
+            if (metrics.updated && metrics.timeMs > 0) {
+                console.debug(`ADRA updated in ${metrics.timeMs.toFixed(2)}ms`);
+            }
+
+            min = this.adraAnalyzer.currentStats.min;
+            max = this.adraAnalyzer.currentStats.max;
+        } else {
+            // Use Global Stats
+            min = this.tileManager.globalMin;
+            max = this.tileManager.globalMax;
+            // Prevent zero range
+            if (max <= min) max = min + 1;
+        }
+
+        // Update settings buffer
+        const settingsData = new Float32Array([
+            min,
+            max,
+            0, // padding1
+            0  // padding2
+        ]);
+        this.device.queue.writeBuffer(this.settingsBuffer, 0, settingsData);
+
+        // Cache bind group if settings haven't changed
+        const settingsSignature = `${min.toFixed(4)}-${max.toFixed(4)}`;
+        if (settingsSignature !== this.lastSettingsSignature || !this.cachedViewportBindGroup) {
+            this.cachedViewportBindGroup = this.device.createBindGroup({
+                layout: this.pipeline.getBindGroupLayout(0),
+                entries: [
+                    {
+                        binding: 0,
+                        resource: {
+                            buffer: this.viewport.getBuffer(),
+                        },
+                    },
+                    {
+                        binding: 1,
+                        resource: {
+                            buffer: this.settingsBuffer,
+                        },
+                    },
+                ],
+            });
+            this.lastSettingsSignature = settingsSignature;
+        }
+
+        passEncoder.setBindGroup(0, this.cachedViewportBindGroup);
 
         for (const tile of visibleTiles) {
             if (tile.bindGroup) {

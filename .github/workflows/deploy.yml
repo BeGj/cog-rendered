@@ -41,10 +41,12 @@ jobs:
         run: pnpm install
 
       - name: Build core package
-        run: cd packages/core && pnpm run build
+        working-directory: packages/core
+        run: pnpm run build
 
       - name: Build demo
-        run: cd examples/demo && pnpm run build
+        working-directory: examples/demo
+        run: pnpm run build
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

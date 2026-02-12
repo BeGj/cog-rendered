@@ -90,7 +90,6 @@ if (controls) {
   label.style.marginLeft = '10px';
   label.style.color = 'white';
   controls.appendChild(label);
-  controls.appendChild(adraContainer);
 
   const checkbox = document.getElementById('autoRangeCheckbox') as HTMLInputElement;
   checkbox.addEventListener('change', (e) => {

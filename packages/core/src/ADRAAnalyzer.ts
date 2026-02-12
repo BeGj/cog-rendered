@@ -168,7 +168,9 @@ export class ADRAAnalyzer {
 
         renderPass.setBindGroup(0, viewportBindGroup);
 
+        // Skip background tile to avoid biasing statistics
         for (const tile of visibleTiles) {
+            if (tile.id === 'background') continue; // Skip placeholder tile
             if (tile.bindGroup) {
                 renderPass.setBindGroup(1, tile.bindGroup);
                 renderPass.draw(6, 1, 0, 0);

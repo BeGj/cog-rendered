@@ -145,6 +145,14 @@ export class TileManager {
         this.imageWidth = 0;
         this.imageHeight = 0;
 
+        // Reset global stats to prevent stale data from previous file
+        this.globalMin = 0;
+        this.globalMax = 1;
+        this.hasGlobalStats = false;
+
+        // Reset version for change detection
+        this.version = 0;
+
         this.worker.postMessage({
             type: 'init',
             source
@@ -338,8 +346,23 @@ export class TileManager {
         }
 
         const bytesPerRow = dim * 16;
-        if (bytesPerRow % 256 !== 0) {
-            console.warn("Texture bytesPerRow not 256-byte aligned!", bytesPerRow, "Dim:", dim);
+        // WebGPU requires bytesPerRow to be 256-byte aligned
+        const alignedBytesPerRow = Math.ceil(bytesPerRow / 256) * 256;
+        const needsPadding = bytesPerRow !== alignedBytesPerRow;
+
+        let uploadData = data;
+        if (needsPadding) {
+            // Create padded buffer
+            const paddedSize = (alignedBytesPerRow / 16) * dim * 4; // total floats needed
+            const paddedData = new Float32Array(paddedSize);
+
+            // Copy row by row with padding
+            for (let row = 0; row < dim; row++) {
+                const srcOffset = row * dim * 4;
+                const dstOffset = row * (alignedBytesPerRow / 4);
+                paddedData.set(data.subarray(srcOffset, srcOffset + dim * 4), dstOffset);
+            }
+            uploadData = paddedData;
         }
 
         const texture = this.device.createTexture({
@@ -350,8 +373,8 @@ export class TileManager {
 
         this.device.queue.writeTexture(
             { texture: texture },
-            data as any,
-            { bytesPerRow: bytesPerRow, rowsPerImage: dim },
+            uploadData as any,
+            { bytesPerRow: alignedBytesPerRow, rowsPerImage: dim },
             [dim, dim]
         );
 

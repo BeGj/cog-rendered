@@ -4,10 +4,10 @@ struct Viewport {
 };
 
 struct Settings {
-    enableAutoRange: f32,
     min: f32,
     max: f32,
-    padding: f32,
+    padding1: f32,
+    padding2: f32,
 };
 
 struct TileUniforms {

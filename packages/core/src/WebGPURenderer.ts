@@ -288,15 +288,15 @@ export class WebGPURenderer {
 
         // Update settings buffer
         const settingsData = new Float32Array([
-            this.autoRangeEnabled ? 1 : 0,
             min,
             max,
-            0 // padding
+            0, // padding1
+            0  // padding2
         ]);
         this.device.queue.writeBuffer(this.settingsBuffer, 0, settingsData);
 
         // Cache bind group if settings haven't changed
-        const settingsSignature = `${this.autoRangeEnabled}-${min.toFixed(4)}-${max.toFixed(4)}`;
+        const settingsSignature = `${min.toFixed(4)}-${max.toFixed(4)}`;
         if (settingsSignature !== this.lastSettingsSignature || !this.cachedViewportBindGroup) {
             this.cachedViewportBindGroup = this.device.createBindGroup({
                 layout: this.pipeline.getBindGroupLayout(0),

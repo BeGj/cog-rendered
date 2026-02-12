@@ -60,8 +60,8 @@ self.onmessage = async (e) => {
             const tileArea = tileSize * tileSize;
             const floatData = new Float32Array(tileArea * 4);
 
-            let min = Number.MAX_VALUE;
-            let max = Number.MIN_VALUE;
+            let min = Number.POSITIVE_INFINITY;
+            let max = Number.NEGATIVE_INFINITY;
 
             // data is TypedArray.
 
@@ -86,9 +86,10 @@ self.onmessage = async (e) => {
                     if (b > max) max = b;
                 }
             } else {
-                // Grayscale or other
+                // Grayscale or other (1 or 2 channels)
                 for (let i = 0; i < tileArea; i++) {
-                    const val = data[i]; // interleave true means data is flat array for 1 sample
+                    // For interleaved data, index by samplesPerPixel to get the first channel
+                    const val = data[i * samplesPerPixel];
                     floatData[i * 4] = val;
                     floatData[i * 4 + 1] = val;
                     floatData[i * 4 + 2] = val;

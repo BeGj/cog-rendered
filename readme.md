@@ -14,6 +14,10 @@ WebGPU based COG renderer with support for Web Workers.
 
 The live demo is available at: https://begj.github.io/cog-rendered/
 
+## Documentation
+- [Band Detection & YCbCr Logic](packages/core/BAND_LOGIC.md)
+
+
 ## ADRA (Automatic Dynamic Range Adjustment)
 
 ADRA is a GPU-accelerated feature that dynamically adjusts the display range of imagery based on visible tiles. This is particularly useful for:
@@ -75,3 +79,10 @@ renderer.load('https://example.com/image.tif');
 
 ### Downloadable cogs (https error on bucket)
 - http://umbra-open-data-catalog.s3-website.us-west-2.amazonaws.com/?prefix=sar-data/tasks/Port%20of%20Rotterdam%2C%20Netherlands/00864c2c-0b0f-49ef-b283-997735b27878/2025-07-29-11-17-12_UMBRA-08/ from Umbra Open Data https://registry.opendata.aws/umbra-open-data/
+
+
+## TODO
+- Render vector graphics
+- Render labels for vector graphics
+- Add support for annotating in the image, ex. https://terradraw.io/ or openlayers
+- add support for parsing 4corners or RPC model of COGs to get georeferencing for vectorgraphics.

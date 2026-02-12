@@ -3,6 +3,12 @@ import { Viewport } from './Viewport';
 // Or we can use a Blob for the worker if we inline the source, but that's complex for a library build.
 // Lets assume the user passes a Worker instance or URL.
 
+export interface BandMetadata {
+    index: number;
+    name: string;
+    description: string;
+}
+
 export class TileManager {
     device: GPUDevice;
     pipeline: GPURenderPipeline; // We need the bind group layout
@@ -26,6 +32,11 @@ export class TileManager {
     globalMin: number = 0;
     globalMax: number = 1; // Default
     hasGlobalStats: boolean = false;
+
+    // Band metadata
+    bandMetadata: BandMetadata[] = [];
+    selectedBands: number[] = [];
+    onBandsInitialized: ((bands: BandMetadata[], suggestedBands: number[]) => void) | null = null;
 
     grayBindGroup: GPUBindGroup | undefined;
     grayUniformBuffer: GPUBuffer | undefined;
@@ -83,13 +94,19 @@ export class TileManager {
     version: number = 0;
 
     handleWorkerMessage(e: MessageEvent) {
-        const { type, id, bitmap, levels } = e.data;
+        const { type, id, bitmap, levels, bandMetadata, suggestedBands } = e.data;
         if (type === 'init-complete') {
             this.levels = levels;
             // Level 0 is full res
             this.imageWidth = levels[0].width;
             this.imageHeight = levels[0].height;
             this.tileSize = levels[0].tileWidth;
+
+            // Store band metadata
+            if (bandMetadata) {
+                this.bandMetadata = bandMetadata;
+                this.selectedBands = suggestedBands || [];
+            }
 
             // Update gray tile uniform to cover the whole image
             if (this.grayUniformBuffer) {
@@ -98,6 +115,11 @@ export class TileManager {
                     this.imageWidth, this.imageHeight // width, height (World)
                 ]);
                 this.device.queue.writeBuffer(this.grayUniformBuffer, 0, data);
+            }
+
+            // Notify about bands first
+            if (this.onBandsInitialized && bandMetadata) {
+                this.onBandsInitialized(this.bandMetadata, this.selectedBands);
             }
 
             if (this.onInitComplete) {
@@ -144,6 +166,10 @@ export class TileManager {
         this.levels = [];
         this.imageWidth = 0;
         this.imageHeight = 0;
+
+        // Reset band metadata
+        this.bandMetadata = [];
+        this.selectedBands = [];
 
         // Reset global stats to prevent stale data from previous file
         this.globalMin = 0;
@@ -333,8 +359,28 @@ export class TileManager {
             tileY: tile.y * (this.levels[tile.z].tileHeight),
             tileZ: tile.z,
             index: index, // IFD index
-            tileSize: this.levels[tile.z].tileWidth
+            tileSize: this.levels[tile.z].tileWidth,
+            bandIndices: this.selectedBands.length > 0 ? this.selectedBands : undefined
         });
+    }
+
+    /**
+     * Set the bands to render. Pass band indices (0-based).
+     * For RGB, pass [redIdx, greenIdx, blueIdx].
+     * For grayscale, pass [bandIdx].
+     */
+    setBands(bandIndices: number[]) {
+        this.selectedBands = bandIndices;
+        // Clear tiles to force reload with new bands
+        for (const tile of this.tiles.values()) {
+            if (tile.texture) tile.texture.destroy();
+        }
+        this.tiles.clear();
+        // Reset global stats since they may change with different bands
+        this.globalMin = 0;
+        this.globalMax = 1;
+        this.hasGlobalStats = false;
+        this.version++;
     }
 
     uploadTile(tile: Tile, data: Float32Array) {

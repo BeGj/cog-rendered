@@ -1,5 +1,5 @@
 import { Viewport } from './Viewport';
-import { TileManager, ADRAOptions } from './TileManager';
+import { TileManager, ADRAOptions, BandMetadata } from './TileManager';
 import { InteractionHandler } from './InteractionHandler';
 import { ADRAAnalyzer } from './ADRAAnalyzer';
 import tileShaderSource from './shaders/tile.wgsl?raw';
@@ -29,6 +29,7 @@ export class WebGPURenderer {
     // Cached bind groups for performance
     private cachedViewportBindGroup: GPUBindGroup | null = null;
     private lastSettingsSignature: string = '';
+    private pendingBandsCallback: ((bands: BandMetadata[], suggestedBands: number[]) => void) | null = null;
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -58,6 +59,44 @@ export class WebGPURenderer {
     setADRAOptions(options: Partial<ADRAOptions>) {
         if (this.adraAnalyzer) {
             this.adraAnalyzer.setOptions(options);
+        }
+    }
+
+    /**
+     * Gets the available band metadata from the loaded image.
+     * @returns Array of band metadata or empty array if not initialized
+     */
+    getBandMetadata(): BandMetadata[] {
+        return this.tileManager?.bandMetadata || [];
+    }
+
+    /**
+     * Sets which bands to render.
+     * @param bandIndices - Array of band indices (0-based). For RGB: [redIdx, greenIdx, blueIdx]. For grayscale: [bandIdx]
+     */
+    setBands(bandIndices: number[]) {
+        if (this.tileManager) {
+            this.tileManager.setBands(bandIndices);
+        }
+    }
+
+    /**
+     * Gets the currently selected band indices.
+     * @returns Array of selected band indices
+     */
+    getSelectedBands(): number[] {
+        return this.tileManager?.selectedBands || [];
+    }
+
+    /**
+     * Sets a callback to be notified when band metadata is available.
+     * @param callback - Function to call with band metadata and suggested bands
+     */
+    onBandsInitialized(callback: (bands: BandMetadata[], suggestedBands: number[]) => void) {
+        if (this.tileManager) {
+            this.tileManager.onBandsInitialized = callback;
+        } else {
+            this.pendingBandsCallback = callback;
         }
     }
 
@@ -178,6 +217,11 @@ export class WebGPURenderer {
         // Or just assume compatibility.
 
         this.tileManager.onInitComplete = this.onTileManagerInit.bind(this);
+
+        if (this.pendingBandsCallback) {
+            this.tileManager.onBandsInitialized = this.pendingBandsCallback;
+            this.pendingBandsCallback = null;
+        }
 
         // Start render loop
         requestAnimationFrame(this.render.bind(this));

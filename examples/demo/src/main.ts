@@ -55,6 +55,8 @@ if (controls) {
   adraContainer.style.display = 'none'; // Hidden by default
   adraContainer.style.fontSize = '12px';
 
+  const defaultSettings = { clipLow: 1, clipHigh: 99, padLow: 50, padHigh: 20 };
+
   const createSlider = (label: string, min: number, max: number, value: number, onChange: (val: number) => void) => {
     const div = document.createElement('div');
     div.style.marginBottom = '5px';
@@ -75,10 +77,10 @@ if (controls) {
     return div;
   };
 
-  adraContainer.appendChild(createSlider("Clip Low", 0, 10, 1, (v) => renderer.setADRAOptions({ clipLow: v })));
-  adraContainer.appendChild(createSlider("Clip High", 90, 100, 99, (v) => renderer.setADRAOptions({ clipHigh: v })));
-  adraContainer.appendChild(createSlider("Pad Low", 0, 100, 50, (v) => renderer.setADRAOptions({ padLow: v })));
-  adraContainer.appendChild(createSlider("Pad High", 0, 100, 20, (v) => renderer.setADRAOptions({ padHigh: v })));
+  adraContainer.appendChild(createSlider("Clip Low", 0, 10, defaultSettings.clipLow, (v) => renderer.setADRAOptions({ clipLow: v })));
+  adraContainer.appendChild(createSlider("Clip High", 90, 100, defaultSettings.clipHigh, (v) => renderer.setADRAOptions({ clipHigh: v })));
+  adraContainer.appendChild(createSlider("Pad Low", 0, 100, defaultSettings.padLow, (v) => renderer.setADRAOptions({ padLow: v })));
+  adraContainer.appendChild(createSlider("Pad High", 0, 100, defaultSettings.padHigh, (v) => renderer.setADRAOptions({ padHigh: v })));
   controls.appendChild(adraContainer);
 
   const label = document.createElement('label');

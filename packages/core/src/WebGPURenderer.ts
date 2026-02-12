@@ -174,6 +174,9 @@ export class WebGPURenderer {
         );
 
         this.tileManager = new TileManager(this.device, this.pipeline, worker);
+        // We might need to give tileManager access to analysisPipeline layout if it differs?
+        // Or just assume compatibility.
+
         this.tileManager.onInitComplete = this.onTileManagerInit.bind(this);
 
         // Start render loop

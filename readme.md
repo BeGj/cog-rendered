@@ -250,14 +250,6 @@ renderer.tileManager.onInitComplete = (width, height, tileSize, levels) => {
 - **LRU Caching**: Automatic memory management
 - **Efficient Updates**: Minimal GPU buffer uploads
 
-### Benchmarks
-
-On a modern laptop (M1 MacBook Pro):
-- **Initial Load**: ~500ms for metadata
-- **Tile Decode**: ~10-30ms per 256×256 tile
-- **Render Time**: 16ms (60 FPS) with hundreds of tiles visible
-- **Memory**: ~50MB for 500 cached tiles
-
 ## 🤝 Contributing
 
 Contributions are welcome! Here's how to get started:

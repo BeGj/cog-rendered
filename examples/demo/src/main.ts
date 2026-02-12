@@ -8,6 +8,10 @@ const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const fileInput = document.getElementById('fileInput') as HTMLInputElement;
 const urlInput = document.getElementById('urlInput') as HTMLInputElement;
 const loadUrlBtn = document.getElementById('loadUrlBtn') as HTMLButtonElement;
+const urlSelect = document.getElementById('urlSelect') as HTMLSelectElement;
+const toggleControlsBtn = document.getElementById('toggleControls') as HTMLButtonElement;
+const controls = document.getElementById('controls');
+
 
 // Make canvas full screen
 function resize() {
@@ -49,7 +53,110 @@ loadUrlBtn.addEventListener('click', () => {
   }
 });
 
-const controls = document.getElementById('controls');
+// Populate dropdown
+const demoImages = [
+  { name: "Sentinel-2 L2A (TCI)", url: "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/21/H/UB/2021/9/S2B_21HUB_20210915_0_L2A/TCI.tif" },
+  { name: "Maxar ARD (MSI)", url: "https://maxar-opendata.s3.dualstack.us-west-2.amazonaws.com/events/Kahramanmaras-turkey-earthquake-23/ard/37/031133102210/2022-07-20/10300100D6740900-ms.tif" },
+  { name: "Maxar ARD (PAN)", url: "https://maxar-opendata.s3.dualstack.us-west-2.amazonaws.com/events/Kahramanmaras-turkey-earthquake-23/ard/37/031133102210/2022-07-20/10300100D6740900-pan.tif" },
+  { name: "Maxar ARD (VIS)", url: "https://maxar-opendata.s3.dualstack.us-west-2.amazonaws.com/events/Kahramanmaras-turkey-earthquake-23/ard/37/031133102210/2022-07-20/10300100D6740900-visual.tif" },
+];
+
+if (urlSelect) {
+  demoImages.forEach(img => {
+    const option = document.createElement('option');
+    option.value = img.url;
+    option.textContent = img.name;
+    urlSelect.appendChild(option);
+  });
+
+  urlSelect.addEventListener('change', () => {
+    const url = urlSelect.value;
+    if (url) {
+      urlInput.value = url;
+      renderer.load(url);
+    }
+  });
+}
+
+// Toggle controls
+if (toggleControlsBtn && controls) {
+  toggleControlsBtn.addEventListener('click', () => {
+    controls.classList.toggle('collapsed');
+  });
+}
+
+// Mobile Touch Handling
+let lastTouchX = 0;
+let lastTouchY = 0;
+let initialPinchDistance = 0;
+let isPanning = false;
+let isZooming = false;
+
+canvas.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 1) {
+    isPanning = true;
+    isZooming = false;
+    lastTouchX = e.touches[0].clientX;
+    lastTouchY = e.touches[0].clientY;
+  } else if (e.touches.length === 2) {
+    isPanning = false;
+    isZooming = true;
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    initialPinchDistance = Math.sqrt(dx * dx + dy * dy);
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', (e) => {
+  if (e.cancelable) e.preventDefault(); // Prevent scrolling
+
+  if (!renderer.viewport) return;
+
+  if (isPanning && e.touches.length === 1) {
+    const touch = e.touches[0];
+    const dx = touch.clientX - lastTouchX;
+    const dy = touch.clientY - lastTouchY;
+
+    lastTouchX = touch.clientX;
+    lastTouchY = touch.clientY;
+
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+
+    const bufferDx = dx * scaleX;
+    const bufferDy = dy * scaleY;
+
+    renderer.viewport.move(-bufferDx / renderer.viewport.zoom, -bufferDy / renderer.viewport.zoom);
+
+  } else if (isZooming && e.touches.length === 2) {
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    const currentDistance = Math.sqrt(dx * dx + dy * dy);
+
+    if (initialPinchDistance > 0) {
+      const factor = currentDistance / initialPinchDistance;
+
+      const centerX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const centerY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+
+      const x = (centerX - rect.left) * scaleX;
+      const y = (centerY - rect.top) * scaleY;
+
+      renderer.viewport.zoomAt(factor, x, y);
+      initialPinchDistance = currentDistance;
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', () => {
+  isPanning = false;
+  isZooming = false;
+});
 if (controls) {
   // Band selector container
   const bandContainer = document.createElement('div');

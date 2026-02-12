@@ -52,56 +52,60 @@ self.onmessage = async (e) => {
                 // Determine if out of bounds?
                 // For now, return empty/transparent?
                 console.warn("Read error", readError);
-                (self as any).postMessage({ type: 'tile-decoded', id, bitmap: null }, []);
+                (self as any).postMessage({ type: 'tile-decoded', id, data: null, min: 0, max: 0 }, []);
                 return;
             }
 
             const samplesPerPixel = img.getSamplesPerPixel();
             const tileArea = tileSize * tileSize;
-            let rgbaData: Uint8ClampedArray;
+            const floatData = new Float32Array(tileArea * 4);
+
+            let min = Number.MAX_VALUE;
+            let max = Number.MIN_VALUE;
 
             // data is TypedArray.
 
-            if (samplesPerPixel === 4) {
-                rgbaData = new Uint8ClampedArray(data);
-            } else if (samplesPerPixel === 3) {
-                rgbaData = new Uint8ClampedArray(tileArea * 4);
-                // RGB
+            if (samplesPerPixel >= 3) {
+                // RGB or RGBA
                 for (let i = 0; i < tileArea; i++) {
-                    rgbaData[i * 4] = data[i * 3];
-                    rgbaData[i * 4 + 1] = data[i * 3 + 1];
-                    rgbaData[i * 4 + 2] = data[i * 3 + 2];
-                    rgbaData[i * 4 + 3] = 255;
-                }
-            } else if (samplesPerPixel === 1) {
-                rgbaData = new Uint8ClampedArray(tileArea * 4);
-                // Grayscale
-                // Normalize if float?
-                // For now, just cast.
-                for (let i = 0; i < tileArea; i++) {
-                    const val = data[i];
-                    rgbaData[i * 4] = val;
-                    rgbaData[i * 4 + 1] = val;
-                    rgbaData[i * 4 + 2] = val;
-                    rgbaData[i * 4 + 3] = 255;
+                    const r = data[i * samplesPerPixel];
+                    const g = data[i * samplesPerPixel + 1];
+                    const b = data[i * samplesPerPixel + 2];
+                    // Alpha? usually ignore or 255.
+
+                    floatData[i * 4] = r;
+                    floatData[i * 4 + 1] = g;
+                    floatData[i * 4 + 2] = b;
+                    floatData[i * 4 + 3] = 1.0; // Full alpha (1.0 for float)
+
+                    if (r < min) min = r;
+                    if (g < min) min = g;
+                    if (b < min) min = b;
+                    if (r > max) max = r;
+                    if (g > max) max = g;
+                    if (b > max) max = b;
                 }
             } else {
-                // Fallback: take first channel
-                rgbaData = new Uint8ClampedArray(tileArea * 4);
-                // Assume interleaved... but if > 4?
+                // Grayscale or other
                 for (let i = 0; i < tileArea; i++) {
-                    const val = data[i * samplesPerPixel];
-                    rgbaData[i * 4] = val;
-                    rgbaData[i * 4 + 1] = val;
-                    rgbaData[i * 4 + 2] = val;
-                    rgbaData[i * 4 + 3] = 255;
+                    const val = data[i]; // interleave true means data is flat array for 1 sample
+                    floatData[i * 4] = val;
+                    floatData[i * 4 + 1] = val;
+                    floatData[i * 4 + 2] = val;
+                    floatData[i * 4 + 3] = 1.0;
+
+                    if (val < min) min = val;
+                    if (val > max) max = val;
                 }
             }
 
-            const imageData = new ImageData(rgbaData as any, tileSize, tileSize);
-            const bitmap = await createImageBitmap(imageData);
-
-            (self as any).postMessage({ type: 'tile-decoded', id, bitmap }, [bitmap]);
+            (self as any).postMessage({
+                type: 'tile-decoded',
+                id,
+                data: floatData,
+                min,
+                max
+            }, [floatData.buffer]);
         }
     } catch (err) {
         console.error("Worker error:", err);

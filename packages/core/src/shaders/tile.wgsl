@@ -4,10 +4,8 @@ struct Viewport {
 };
 
 struct Settings {
-    min: f32,
-    max: f32,
-    padding1: f32,
-    padding2: f32,
+    min: vec4<f32>,
+    max: vec4<f32>,
 };
 
 struct TileUniforms {
@@ -57,30 +55,30 @@ fn vert_main(@builtin(vertex_index) VertexIndex : u32) -> VertexOutput {
 fn frag_main(@location(0) uv : vec2<f32>) -> @location(0) vec4<f32> {
     var color = textureSample(myTexture, mySampler, uv);
     
-    // Check if pixel is "no-data" (pure black or very close to it)
-    // Only apply ADRA to actual image pixels
-    let isNoData = color.r == 0.0 && color.g == 0.0 && color.b == 0.0;
-    
-    if (!isNoData) {
-        // Remap color based on provided min/max
-        // val = (color - min) / (max - min)
-        let minVal = settings.min;
-        let maxVal = settings.max;
-        
-        // Avoid div by zero
-        let range = max(maxVal - minVal, 0.00001);
-        
-        color = (color - vec4<f32>(minVal)) / range;
+    // Check for transparency (NoData)
+    if (color.a <= 0.0) {
+        return vec4<f32>(0.0);
     }
+
+    // Remap color based on provided min/max per channel
+    // val = (color - min) / (max - min)
+    let minVal = settings.min;
+    let maxVal = settings.max;
     
+    // Avoid div by zero (component-wise)
+    let range = max(maxVal - minVal, vec4<f32>(0.00001));
+    
+    color = (color - minVal) / range;
+    
+    // Force alpha to 1.0 for valid pixels
     color.a = 1.0;
+    
     return color;
 }
 
 @fragment
 fn frag_analysis(@location(0) uv : vec2<f32>) -> @location(0) vec4<f32> {
     let c = textureSample(myTexture, mySampler, uv);
-    // Use max channel value as intensity proxy
-    let val = max(c.r, max(c.g, c.b));
-    return vec4<f32>(val, 0.0, 0.0, 1.0);
+    // Return RGB values for analysis
+    return vec4<f32>(c.r, c.g, c.b, c.a);
 }

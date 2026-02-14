@@ -197,7 +197,7 @@ self.onmessage = async (e: MessageEvent) => {
             const pi = img.fileDirectory.PhotometricInterpretation;
             const isYCbCr = pi === 6;
 
-            const fillValue = isYCbCr ? [0, 128, 128] : 0;
+            const fillValue = 0;
 
             let data: any;
             try {
@@ -224,20 +224,25 @@ self.onmessage = async (e: MessageEvent) => {
 
             if (bands.length === 1) {
                 const bandIdx = bands[0];
+                const THRESHOLD = 5;
                 for (let i = 0; i < tileArea; i++) {
                     const val = data[i * samplesPerPixel + bandIdx];
                     floatData[i * 4] = val;
                     floatData[i * 4 + 1] = val;
                     floatData[i * 4 + 2] = val;
-                    floatData[i * 4 + 3] = 1.0;
-                    if (val < min) min = val;
-                    if (val > max) max = val;
+                    // Treat near 0 as NoData/Transparent
+                    floatData[i * 4 + 3] = (val < THRESHOLD) ? 0.0 : 1.0;
+
+                    if (val < min && val >= THRESHOLD) min = val;
+                    if (val > max && val >= THRESHOLD) max = val;
                 }
             } else if (bands.length >= 3) {
                 const rBand = bands[0];
                 const gBand = bands[1];
                 const bBand = bands[2];
                 let alpha = 1.0;
+
+                const THRESHOLD = 5; // Tolerance for JPEG artifacts
 
                 for (let i = 0; i < tileArea; i++) {
                     let r = data[i * samplesPerPixel + rBand];
@@ -250,6 +255,7 @@ self.onmessage = async (e: MessageEvent) => {
                         const Cb = data[i * samplesPerPixel + 1];
                         const Cr = data[i * samplesPerPixel + 2];
 
+                        // Exact 0 check for padding (fillValue=0)
                         if (Y === 0 && Cb === 0 && Cr === 0) {
                             r = 0; g = 0; b = 0; alpha = 0.0;
                         } else {
@@ -260,6 +266,12 @@ self.onmessage = async (e: MessageEvent) => {
                             g = Math.max(0, Math.min(255, g));
                             b = Math.max(0, Math.min(255, b));
                         }
+                    }
+
+                    // Threshold check for noisy black (JPEG artifacts)
+                    // Also handles standard RGB precise 0
+                    if (r < THRESHOLD && g < THRESHOLD && b < THRESHOLD) {
+                        alpha = 0.0;
                     }
 
                     floatData[i * 4] = r;

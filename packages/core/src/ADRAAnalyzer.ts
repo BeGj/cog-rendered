@@ -25,11 +25,18 @@ export class ADRAAnalyzer {
     private lastOptionsSignature: string = '';
     private lastCalcTime: number = 0;
 
-    // Current statistics
-    public currentStats: { min: number, max: number } = { min: 0, max: 1 };
+    // Current statistics (RGB)
+    public currentStats: { min: number[], max: number[] } = { min: [0, 0, 0], max: [1, 1, 1] };
+
+    // ... (lines 31-200 are acceptable to skip in replacement if I target specific block, but I need to replace calculateStatistics completely and the property definiton is far away)
+    // Actually, I can use multi-replace.
+
 
     // Configuration
     public options: ADRAOptions;
+
+    // Context
+    private globalMax: number = 255;
 
     /**
      * Creates a new ADRAAnalyzer instance.
@@ -86,14 +93,17 @@ export class ADRAAnalyzer {
      * @param viewport - Current viewport for change detection
      * @param settingsBuffer - GPU buffer containing settings
      * @param tileManagerVersion - Version number from TileManager
+     * @param globalMax - Global max value for heuristic
      * @returns Performance metrics (calculation time in ms)
      */
     update(
         visibleTiles: any[],
         viewport: Viewport,
         settingsBuffer: GPUBuffer,
-        tileManagerVersion: number
+        tileManagerVersion: number,
+        globalMax: number
     ): { updated: boolean, timeMs: number } {
+        this.globalMax = globalMax;
         const startTime = performance.now();
 
         // Check if update is needed
@@ -206,43 +216,65 @@ export class ADRAAnalyzer {
         const arrayBuffer = this.analysisBuffer.getMappedRange();
         const data = new Float32Array(arrayBuffer);
 
+        const rSamples: number[] = [];
+        const gSamples: number[] = [];
+        const bSamples: number[] = [];
+
         // Collect valid samples (alpha > 0.5 indicates written pixel)
-        const samples: number[] = [];
         for (let i = 0; i < data.length; i += 4) {
             if (data[i + 3] > 0.5) {
-                samples.push(data[i]); // R channel contains intensity
+                rSamples.push(data[i]);
+                gSamples.push(data[i + 1]);
+                bSamples.push(data[i + 2]);
             }
         }
 
-        if (samples.length === 0) {
+        if (rSamples.length === 0) {
             return; // No valid data
         }
 
-        // Sort for percentile calculation
-        samples.sort((a, b) => a - b);
+        const calcRange = (samples: number[]) => {
+            samples.sort((a, b) => a - b);
+            const { clipLow, clipHigh, padLow, padHigh } = this.options;
 
-        // Calculate percentile indices
-        const { clipLow, clipHigh, padLow, padHigh } = this.options;
-        const pLow = Math.max(0, Math.min(100, clipLow)) / 100;
-        const pHigh = Math.max(0, Math.min(100, clipHigh)) / 100;
+            const pLow = Math.max(0, Math.min(100, clipLow)) / 100;
+            const pHigh = Math.max(0, Math.min(100, clipHigh)) / 100;
 
-        const lowIndex = Math.floor(samples.length * pLow);
-        const highIndex = Math.floor(samples.length * pHigh);
+            const lowIndex = Math.floor(samples.length * pLow);
+            const highIndex = Math.floor(samples.length * pHigh);
 
-        let min = samples[lowIndex] ?? samples[0];
-        let max = samples[highIndex] ?? samples[samples.length - 1];
+            let min = samples[lowIndex] ?? samples[0];
+            let max = samples[highIndex] ?? samples[samples.length - 1];
 
-        // Apply padding
-        const range = max - min;
-        min -= range * (padLow / 100);
-        max += range * (padHigh / 100);
+            // Apply padding
+            const range = max - min;
+            min -= range * (padLow / 100);
+            max += range * (padHigh / 100);
 
-        // Prevent zero range
-        if (max <= min) {
-            max = min + 0.0001;
-        }
+            // Clamp min to 0 to prevent black from becoming gray/colored
+            min = Math.max(0, min);
 
-        this.currentStats = { min, max };
+            // Prevent zero range and noise amplification
+            // Robust Heuristic: Use Global Max to determine scale (8-bit vs float)
+            let minRange = 0.05; // For float 0-1
+            if (this.globalMax > 5.0) { // Safety threshold (if max > 5, almost certainly 8-bit or higher)
+                minRange = 50.0; // Enforce ~20% range for 8-bit to avoid "blue noise"
+            }
+
+            if (max <= min + minRange) {
+                max = min + minRange;
+            }
+            return { min, max };
+        };
+
+        const r = calcRange(rSamples);
+        const g = calcRange(gSamples);
+        const b = calcRange(bSamples);
+
+        this.currentStats = {
+            min: [r.min, g.min, b.min],
+            max: [r.max, g.max, b.max]
+        };
     }
 
     /**

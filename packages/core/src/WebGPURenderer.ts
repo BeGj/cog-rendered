@@ -138,7 +138,7 @@ export class WebGPURenderer {
 
         // Settings Buffer
         this.settingsBuffer = this.device.createBuffer({
-            size: 16,
+            size: 32,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
 
@@ -306,8 +306,8 @@ export class WebGPURenderer {
 
         const visibleTiles = this.tileManager.getVisibleTiles(this.viewport);
 
-        let min = 0;
-        let max = 1;
+        let min = [0, 0, 0];
+        let max = [1, 1, 1];
 
         if (this.autoRangeEnabled && this.adraAnalyzer) {
             // Update ADRA statistics
@@ -315,7 +315,8 @@ export class WebGPURenderer {
                 visibleTiles,
                 this.viewport,
                 this.settingsBuffer,
-                this.tileManager.version
+                this.tileManager.version,
+                this.tileManager.globalMax
             );
 
             // Log performance metrics (optional)
@@ -327,23 +328,24 @@ export class WebGPURenderer {
             max = this.adraAnalyzer.currentStats.max;
         } else {
             // Use Global Stats
-            min = this.tileManager.globalMin;
-            max = this.tileManager.globalMax;
+            const gMin = this.tileManager.globalMin;
+            let gMax = this.tileManager.globalMax;
             // Prevent zero range
-            if (max <= min) max = min + 1;
+            if (gMax <= gMin) gMax = gMin + 1;
+
+            min = [gMin, gMin, gMin];
+            max = [gMax, gMax, gMax];
         }
 
         // Update settings buffer
         const settingsData = new Float32Array([
-            min,
-            max,
-            0, // padding1
-            0  // padding2
+            min[0], min[1], min[2], 0,
+            max[0], max[1], max[2], 0
         ]);
         this.device.queue.writeBuffer(this.settingsBuffer, 0, settingsData);
 
         // Cache bind group if settings haven't changed
-        const settingsSignature = `${min.toFixed(4)}-${max.toFixed(4)}`;
+        const settingsSignature = `${min.map(n => n.toFixed(4)).join(',')}-${max.map(n => n.toFixed(4)).join(',')}`;
         if (settingsSignature !== this.lastSettingsSignature || !this.cachedViewportBindGroup) {
             this.cachedViewportBindGroup = this.device.createBindGroup({
                 layout: this.pipeline.getBindGroupLayout(0),

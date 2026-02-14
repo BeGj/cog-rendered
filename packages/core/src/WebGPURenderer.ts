@@ -30,6 +30,7 @@ export class WebGPURenderer {
     private cachedViewportBindGroup: GPUBindGroup | null = null;
     private lastSettingsSignature: string = '';
     private pendingBandsCallback: ((bands: BandMetadata[], suggestedBands: number[]) => void) | null = null;
+    public onLoadProgress: ((count: number) => void) | null = null;
 
     constructor(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
@@ -101,10 +102,10 @@ export class WebGPURenderer {
     }
 
     /**
-     * Initializes the WebGPU renderer.
-     * @param worker - Web Worker for COG decoding
+     * Initialize the renderer.
+     * @param workerFactory - Factory function to create workers
      */
-    async init(worker: Worker) {
+    async init(workerFactory: () => Worker) {
 
         if (!navigator.gpu) {
             throw new Error("WebGPU not supported on this browser.");
@@ -212,7 +213,7 @@ export class WebGPURenderer {
             }
         );
 
-        this.tileManager = new TileManager(this.device, this.pipeline, worker);
+        this.tileManager = new TileManager(this.device, this.pipeline, workerFactory);
         // We might need to give tileManager access to analysisPipeline layout if it differs?
         // Or just assume compatibility.
 
@@ -306,6 +307,10 @@ export class WebGPURenderer {
 
         const visibleTiles = this.tileManager.getVisibleTiles(this.viewport);
 
+        if (this.onLoadProgress) {
+            this.onLoadProgress(this.tileManager.pendingRequests);
+        }
+
         let min = [0, 0, 0];
         let max = [1, 1, 1];
 
@@ -320,9 +325,9 @@ export class WebGPURenderer {
             );
 
             // Log performance metrics (optional)
-            if (metrics.updated && metrics.timeMs > 0) {
-                console.debug(`ADRA updated in ${metrics.timeMs.toFixed(2)}ms`);
-            }
+            // if (metrics.updated && metrics.timeMs > 0) {
+            //    console.debug(`ADRA updated in ${metrics.timeMs.toFixed(2)}ms`);
+            // }
 
             min = this.adraAnalyzer.currentStats.min;
             max = this.adraAnalyzer.currentStats.max;

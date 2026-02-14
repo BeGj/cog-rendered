@@ -1,7 +1,5 @@
 import { Viewport } from './Viewport';
-// We'll trust the user to provide the worker URL or a factory function for now.
-// Or we can use a Blob for the worker if we inline the source, but that's complex for a library build.
-// Lets assume the user passes a Worker instance or URL.
+import { WorkerPool } from './WorkerPool';
 
 export interface BandMetadata {
     index: number;
@@ -11,26 +9,20 @@ export interface BandMetadata {
 
 export class TileManager {
     device: GPUDevice;
-    pipeline: GPURenderPipeline; // We need the bind group layout
+    pipeline: GPURenderPipeline;
 
-    // We need a worker.
-    worker: Worker;
+    workerPool: WorkerPool;
 
     // Cache
-    // Map key: "z-x-y"
     tiles: Map<string, Tile> = new Map();
 
-    // LRU?
-    // Array of keys? 
-    // Simply clear if too many?
-
-    tileSize: number = 256; // Default, will read from metadata
+    tileSize: number = 256;
     imageWidth: number = 0;
     imageHeight: number = 0;
 
-    // Global Stats (for when ADRA is off)
+    // Global Stats
     globalMin: number = 0;
-    globalMax: number = 1; // Default
+    globalMax: number = 255; // Default 8-bit
     hasGlobalStats: boolean = false;
 
     // Band metadata
@@ -41,24 +33,25 @@ export class TileManager {
     grayBindGroup: GPUBindGroup | undefined;
     grayUniformBuffer: GPUBuffer | undefined;
 
-    constructor(device: GPUDevice, pipeline: GPURenderPipeline, worker: Worker) {
+    levels: any[] = [];
+    onInitComplete: ((width: number, height: number, tileSize: number, levels: any[]) => void) | null = null;
+    version: number = 0;
+
+    constructor(device: GPUDevice, pipeline: GPURenderPipeline, workerFactory: () => Worker) {
         this.device = device;
         this.pipeline = pipeline;
-        this.worker = worker;
-
-        this.worker.onmessage = this.handleWorkerMessage.bind(this);
+        this.workerPool = new WorkerPool(workerFactory);
         this.initGrayPlaceholder();
     }
 
     initGrayPlaceholder() {
-        // 1x1 Gray Texture
         const texture = this.device.createTexture({
             size: [1, 1, 1],
             format: 'rgba8unorm',
             usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
         });
 
-        const data = new Uint8Array([50, 50, 50, 255]); // Dark gray
+        const data = new Uint8Array([50, 50, 50, 255]);
         this.device.queue.writeTexture(
             { texture },
             data,
@@ -66,7 +59,6 @@ export class TileManager {
             [1, 1, 1]
         );
 
-        // Uniform Buffer
         this.grayUniformBuffer = this.device.createBuffer({
             size: 32,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -87,77 +79,7 @@ export class TileManager {
         });
     }
 
-    levels: any[] = [];
-
-    onInitComplete: ((width: number, height: number, tileSize: number, levels: any[]) => void) | null = null;
-
-    version: number = 0;
-
-    handleWorkerMessage(e: MessageEvent) {
-        const { type, id, bitmap, levels, bandMetadata, suggestedBands } = e.data;
-        if (type === 'init-complete') {
-            this.levels = levels;
-            // Level 0 is full res
-            this.imageWidth = levels[0].width;
-            this.imageHeight = levels[0].height;
-            this.tileSize = levels[0].tileWidth;
-
-            // Store band metadata
-            if (bandMetadata) {
-                this.bandMetadata = bandMetadata;
-                this.selectedBands = suggestedBands || [];
-            }
-
-            // Update gray tile uniform to cover the whole image
-            if (this.grayUniformBuffer) {
-                const data = new Float32Array([
-                    0, 0, // x, y (World)
-                    this.imageWidth, this.imageHeight // width, height (World)
-                ]);
-                this.device.queue.writeBuffer(this.grayUniformBuffer, 0, data);
-            }
-
-            // Notify about bands first
-            if (this.onBandsInitialized && bandMetadata) {
-                this.onBandsInitialized(this.bandMetadata, this.selectedBands);
-            }
-
-            if (this.onInitComplete) {
-                this.onInitComplete(this.imageWidth, this.imageHeight, this.tileSize, this.levels);
-            }
-        } else if (type === 'tile-decoded') {
-            const tile = this.tiles.get(id);
-            if (tile) {
-                const { data, min, max } = e.data;
-                if (data) {
-                    // Update Global Stats
-                    if (!this.hasGlobalStats) {
-                        this.globalMin = min;
-                        this.globalMax = max;
-                        this.hasGlobalStats = true;
-                    } else {
-                        // Expand global range
-                        if (min < this.globalMin) this.globalMin = min;
-                        if (max > this.globalMax) this.globalMax = max;
-                    }
-
-                    // Upload to GPU
-                    this.uploadTile(tile, data);
-                    tile.loaded = true;
-                    tile.min = min;
-                    tile.max = max;
-
-                    // Increment version to signal data change
-                    this.version++;
-                } else {
-                    // Failed to decode (likely out of bounds or error). 
-                    tile.loaded = true;
-                }
-            }
-        }
-    }
-
-    init(source: File | string) {
+    async init(source: File | string) {
         // Cleanup existing tiles
         for (const tile of this.tiles.values()) {
             if (tile.texture) tile.texture.destroy();
@@ -166,31 +88,54 @@ export class TileManager {
         this.levels = [];
         this.imageWidth = 0;
         this.imageHeight = 0;
-
-        // Reset band metadata
         this.bandMetadata = [];
         this.selectedBands = [];
-
-        // Reset global stats to prevent stale data from previous file
         this.globalMin = 0;
         this.globalMax = 1;
         this.hasGlobalStats = false;
-
-        // Reset version for change detection
         this.version = 0;
 
-        this.worker.postMessage({
-            type: 'init',
-            source
-        });
+        // Initialize workers and fetch metadata
+        // 1. Broadcast init to all workers providing the source
+        this.workerPool.broadcast({ type: 'init', source });
+
+        // 2. Send a specific task to one worker to retrieve the metadata response
+        // Note: Sending 'init' again is safe as it's idempotent for metadata retrieval
+        const response = await this.workerPool.process('init-task', { type: 'init', source, id: 'init-task' }, 100);
+
+        // Handle response
+        const { levels, bandMetadata, suggestedBands } = response;
+        this.levels = levels;
+        this.imageWidth = levels[0].width;
+        this.imageHeight = levels[0].height;
+        this.tileSize = levels[0].tileWidth;
+
+        if (bandMetadata) {
+            this.bandMetadata = bandMetadata;
+            this.selectedBands = suggestedBands || [];
+        }
+
+        if (this.grayUniformBuffer) {
+            const data = new Float32Array([
+                0, 0,
+                this.imageWidth, this.imageHeight
+            ]);
+            this.device.queue.writeBuffer(this.grayUniformBuffer, 0, data);
+        }
+
+        if (this.onBandsInitialized && bandMetadata) {
+            this.onBandsInitialized(this.bandMetadata, this.selectedBands);
+        }
+
+        if (this.onInitComplete) {
+            this.onInitComplete(this.imageWidth, this.imageHeight, this.tileSize, this.levels);
+        }
     }
 
     getBestLevel(viewport: Viewport): number {
         if (!this.levels.length) return 0;
-
         const targetRes = 1 / viewport.zoom;
         let bestLevel = 0;
-
         for (let i = 0; i < this.levels.length; i++) {
             const levelRes = this.imageWidth / this.levels[i].width;
             if (levelRes <= targetRes) {
@@ -199,15 +144,17 @@ export class TileManager {
                 break;
             }
         }
-
         return bestLevel;
     }
 
+    /**
+     * Determine which tiles are visible and strictly request them.
+     * Cancels filtered-out tiles.
+     */
     getVisibleTiles(viewport: Viewport): Tile[] {
         const visibleTiles: Tile[] = [];
         const currentFrameTime = Date.now();
 
-        // Always add background tile first if ready
         if (this.grayBindGroup) {
             visibleTiles.push({
                 id: 'background',
@@ -224,32 +171,32 @@ export class TileManager {
         if (this.levels.length === 0) return visibleTiles;
 
         const targetLevelIndex = this.getBestLevel(viewport);
-
-        // Render from Lowest Res (High Index) to Highest Res (Low Index)
-        // This ensures high-res tiles are drawn ON TOP of low-res tiles (Painter's Algorithm)
         const sortedLevels = [...this.levels].sort((a, b) => b.index - a.index);
+
+        // Track requested tiles this frame to identify what to Cancel
+        const requiredTiles = new Set<string>();
+
+        // Collect new requests to sort by priority
+        const pendingRequests: { tile: Tile, index: number, priority: number }[] = [];
 
         for (const level of sortedLevels) {
             const levelIndex = level.index;
             const downscale = this.levels[0].width / level.width;
+            const tileW = level.tileWidth;
+            const tileH = level.tileHeight;
 
-            // Viewport bounds in World Coordinates (Level 0)
+            // Viewport bounds calculation
             const halfW = viewport.size[0] / 2 / viewport.zoom;
             const halfH = viewport.size[1] / 2 / viewport.zoom;
-
             const minX = viewport.center[0] - halfW;
             const maxX = viewport.center[0] + halfW;
             const minY = viewport.center[1] - halfH;
             const maxY = viewport.center[1] + halfH;
 
-            // Map Level 0 bounds to Level bounds
             const lMinX = minX / downscale;
             const lMaxX = maxX / downscale;
             const lMinY = minY / downscale;
             const lMaxY = maxY / downscale;
-
-            const tileW = level.tileWidth;
-            const tileH = level.tileHeight;
 
             const startX = Math.max(0, Math.floor(lMinX / tileW));
             const endX = Math.min(Math.ceil(level.width / tileW), Math.ceil(lMaxX / tileW));
@@ -259,124 +206,168 @@ export class TileManager {
             for (let y = startY; y < endY; y++) {
                 for (let x = startX; x < endX; x++) {
                     const key = `${levelIndex}-${x}-${y}`;
+                    requiredTiles.add(key);
+
                     let tile = this.tiles.get(key);
 
-                    // If this is the TARGET level, we MUST ensure the tile exists and is requested
                     if (levelIndex === targetLevelIndex) {
                         if (!tile) {
                             const worldX = x * tileW * downscale;
                             const worldY = y * tileH * downscale;
-                            const worldW = tileW * downscale;
-                            const worldH = tileH * downscale;
 
                             tile = {
                                 id: key,
                                 x, y, z: levelIndex,
                                 loaded: false,
                                 worldX, worldY,
-                                width: worldW,
-                                height: worldH,
+                                width: tileW * downscale,
+                                height: tileH * downscale,
                                 lastUsed: currentFrameTime
                             };
                             this.tiles.set(key, tile);
-                            this.requestTile(tile, level.index);
+
+                            // Calculate Priority: Distance from center
+                            const tileCenterW = worldX + (tile.width / 2);
+                            const tileCenterH = worldY + (tile.height / 2);
+                            const dx = tileCenterW - viewport.center[0];
+                            const dy = tileCenterH - viewport.center[1];
+                            const distSq = dx * dx + dy * dy;
+                            // Invert distance for priority (closer = higher)
+                            // Use arbitrary large number - distance
+                            const priority = 1000000000000 - distSq;
+
+                            // Queue request instead of sending immediately
+                            pendingRequests.push({ tile, index: level.index, priority });
+                        } else if (!tile.loaded) {
+                            // If tile exists but not loaded, ensure it's prioritized?
+                            // It might be already in progress or queued.
+                            // WorkerPool handles duplicate task IDs by updating priority.
+                            // So we can re-request it to update priority if user panned.
+                            // Recalculate priority
+                            const tileCenterW = tile.worldX + (tile.width / 2);
+                            const tileCenterH = tile.worldY + (tile.height / 2);
+                            const dx = tileCenterW - viewport.center[0];
+                            const dy = tileCenterH - viewport.center[1];
+                            const distSq = dx * dx + dy * dy;
+                            const priority = 1000000000000 - distSq;
+                            pendingRequests.push({ tile, index: level.index, priority });
                         }
                     }
 
                     if (tile) {
-                        // If loaded, we render it
+                        tile.lastUsed = currentFrameTime;
                         if (tile.loaded && tile.bindGroup) {
-                            tile.lastUsed = currentFrameTime;
                             visibleTiles.push(tile);
-                        } else if (levelIndex === targetLevelIndex) {
-                            // Keep it alive if it's being requested
-                            tile.lastUsed = currentFrameTime;
-                        } else if (!tile.loaded) {
-                            // Also keep alive other-level tiles if they exist (maybe loading)
-                            tile.lastUsed = currentFrameTime;
+                        } else if (levelIndex !== targetLevelIndex) {
+                            // keep alive
                         }
                     }
                 }
             }
         }
 
-        this.prune(currentFrameTime);
+        // Process collected requests sorted by priority
+        pendingRequests.sort((a, b) => b.priority - a.priority);
+        for (const req of pendingRequests) {
+            this.requestTile(req.tile, req.index, req.priority);
+        }
 
+        // Cancel pending tiles that are no longer required
+        // Iterate all tiles, if not loaded and not in requiredTiles, abort.
+        for (const [key, tile] of this.tiles.entries()) {
+            if (!tile.loaded && !requiredTiles.has(key)) {
+                // Abort loading if tile is no longer visible
+                this.workerPool.abort(key);
+            }
+        }
+
+        this.prune(currentFrameTime);
         return visibleTiles;
     }
 
     prune(activeTime: number) {
-        const CACHE_LIMIT = 500; // Increased from 100
+        const CACHE_LIMIT = 1000; // Increased limit
         if (this.tiles.size <= CACHE_LIMIT) return;
-
         const entries = Array.from(this.tiles.entries());
-        // Sort: oldest lastUsed first
         entries.sort((a, b) => a[1].lastUsed - b[1].lastUsed);
 
-        // We want to remove tiles until we reach a safe limit (e.g. CACHE_LIMIT - 50 buffer)
-        // BUT strictly do NOT remove tiles used this frame (activeTime).
-
         const targetSize = CACHE_LIMIT - 50;
-        let removedCount = 0;
-        const toRemoveCount = Math.max(0, this.tiles.size - targetSize);
+        let removed = 0;
+        const toRemove = Math.max(0, this.tiles.size - targetSize);
 
         for (const [key, tile] of entries) {
-            if (removedCount >= toRemoveCount) break;
-
-            // Critical check: fail-safe against deleting visible tiles
+            if (removed >= toRemove) break;
             if (tile.lastUsed === activeTime) continue;
 
-            // Destroy GPU resources
             if (tile.texture) tile.texture.destroy();
+            this.workerPool.abort(key); // Ensure aborted
             this.tiles.delete(key);
-            removedCount++;
+            removed++;
         }
     }
 
     screenToWorld(sx: number, sy: number, viewport: Viewport) {
-        // Just for reference, not used if we use bounding box logic above
-        // World = (Screen - Size/2) / Zoom + Center
         const wx = (sx - viewport.size[0] / 2) / viewport.zoom + viewport.center[0];
         const wy = (sy - viewport.size[1] / 2) / viewport.zoom + viewport.center[1];
         return { x: wx, y: wy };
     }
 
-    createTile(x: number, y: number, z: number): Tile {
-        // Deprecated by getVisibleTiles logic but kept for interface compatibility if needed
-        return {
-            id: `${z}-${x}-${y}`,
-            x, y, z,
-            loaded: false,
-            worldX: 0, worldY: 0, width: 0, height: 0, lastUsed: 0
-        };
-    }
-
-    requestTile(tile: Tile, index: number) {
-        this.worker.postMessage({
+    requestTile(tile: Tile, index: number, priority: number) {
+        const req = {
             type: 'decode',
             id: tile.id,
             tileX: tile.x * (this.levels[tile.z].tileWidth),
             tileY: tile.y * (this.levels[tile.z].tileHeight),
             tileZ: tile.z,
-            index: index, // IFD index
+            index: index,
             tileSize: this.levels[tile.z].tileWidth,
             bandIndices: this.selectedBands.length > 0 ? this.selectedBands : undefined
-        });
+        };
+
+        this.workerPool.process(tile.id, req, priority)
+            .then(data => {
+                if (data && data.data) {
+                    this.handleTileDecoded(tile, data);
+                }
+            })
+            .catch(err => {
+                // If aborted or error, remove tile so it can be retried if needed
+                if (this.tiles.has(tile.id)) {
+                    const t = this.tiles.get(tile.id);
+                    if (t && t.texture) t.texture.destroy();
+                    this.tiles.delete(tile.id);
+                }
+            });
     }
 
-    /**
-     * Set the bands to render. Pass band indices (0-based).
-     * For RGB, pass [redIdx, greenIdx, blueIdx].
-     * For grayscale, pass [bandIdx].
-     */
+    handleTileDecoded(tile: Tile, result: any) {
+        const { data, min, max } = result;
+        if (!data) return;
+
+        // Update Global Stats
+        if (!this.hasGlobalStats) {
+            this.globalMin = min;
+            this.globalMax = max;
+            this.hasGlobalStats = true;
+        } else {
+            if (min < this.globalMin) this.globalMin = min;
+            if (max > this.globalMax) this.globalMax = max;
+        }
+
+        this.uploadTile(tile, data);
+        tile.loaded = true;
+        tile.min = min;
+        tile.max = max;
+        this.version++;
+    }
+
     setBands(bandIndices: number[]) {
         this.selectedBands = bandIndices;
-        // Clear tiles to force reload with new bands
         for (const tile of this.tiles.values()) {
             if (tile.texture) tile.texture.destroy();
+            this.workerPool.abort(tile.id);
         }
         this.tiles.clear();
-        // Reset global stats since they may change with different bands
         this.globalMin = 0;
         this.globalMax = 1;
         this.hasGlobalStats = false;
@@ -384,47 +375,34 @@ export class TileManager {
     }
 
     uploadTile(tile: Tile, data: Float32Array) {
-        // Data is Float32Array (RGBA)
         const dim = Math.sqrt(data.length / 4);
-
-        if (dim % 1 !== 0) {
-            console.error("Invalid tile dimensions derived from data length:", data.length, dim);
-        }
-
         const bytesPerRow = dim * 16;
-        // WebGPU requires bytesPerRow to be 256-byte aligned
         const alignedBytesPerRow = Math.ceil(bytesPerRow / 256) * 256;
         const needsPadding = bytesPerRow !== alignedBytesPerRow;
 
         let uploadData = data;
         if (needsPadding) {
-            // Create padded buffer
-            const paddedSize = (alignedBytesPerRow / 16) * dim * 4; // total floats needed
-            const paddedData = new Float32Array(paddedSize);
-
-            // Copy row by row with padding
-            for (let row = 0; row < dim; row++) {
-                const srcOffset = row * dim * 4;
-                const dstOffset = row * (alignedBytesPerRow / 4);
-                paddedData.set(data.subarray(srcOffset, srcOffset + dim * 4), dstOffset);
+            const padded = new Float32Array((alignedBytesPerRow / 4) * dim);
+            for (let y = 0; y < dim; y++) {
+                const srcRow = data.subarray(y * dim * 4, (y + 1) * dim * 4);
+                const dstOffset = (y * alignedBytesPerRow) / 4;
+                padded.set(srcRow, dstOffset);
             }
-            uploadData = paddedData;
+            uploadData = padded;
         }
 
-        const texture = this.device.createTexture({
+        tile.texture = this.device.createTexture({
             size: [dim, dim, 1],
             format: 'rgba32float',
             usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
         });
 
         this.device.queue.writeTexture(
-            { texture: texture },
+            { texture: tile.texture },
             uploadData as any,
             { bytesPerRow: alignedBytesPerRow, rowsPerImage: dim },
-            [dim, dim]
+            [dim, dim, 1]
         );
-
-        tile.texture = texture;
 
         // Create Uniform Buffer for Tile Transform
         const uniformBuffer = this.device.createBuffer({
@@ -438,7 +416,6 @@ export class TileManager {
         ]);
         this.device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 
-        // Create Bind Group
         // Use non-filtering sampler by default to match rgba32float support
         const sampler = this.device.createSampler({
             magFilter: 'nearest',
@@ -453,6 +430,10 @@ export class TileManager {
                 { binding: 2, resource: { buffer: uniformBuffer } },
             ]
         });
+    }
+
+    get pendingRequests(): number {
+        return this.workerPool.pendingCount;
     }
 }
 

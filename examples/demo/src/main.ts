@@ -27,11 +27,19 @@ resize();
 
 const renderer = new WebGPURenderer(canvas);
 
-// Initialize with worker
-const worker = new DecoderWorker();
-renderer.init(worker).then(() => {
-  console.log("Renderer initialized");
+// Initialize with worker factory
+const workerFactory = () => new DecoderWorker();
+renderer.init(workerFactory).then(() => {
   renderer.enableInteractions();
+
+  const statusDiv = document.getElementById('status');
+  renderer.onLoadProgress = (count: number) => {
+    if (statusDiv) {
+      statusDiv.innerText = `Loading: ${count}`;
+      statusDiv.style.display = count > 0 ? 'block' : 'none';
+    }
+  };
+
 }).catch((err: unknown) => {
   const message = err instanceof Error ? err.message : String(err);
   console.error("Failed to init renderer:", err);

@@ -188,7 +188,7 @@ self.onmessage = async (e: MessageEvent) => {
                 });
             }
 
-            self.postMessage({ type: 'init-complete', levels, bandMetadata, suggestedBands });
+            self.postMessage({ type: 'init-complete', id, levels, bandMetadata, suggestedBands });
         } else if (type === 'decode') {
             const { tileX, tileY, index, bandIndices } = e.data;
             const img = await tiff.getImage(index || 0);
